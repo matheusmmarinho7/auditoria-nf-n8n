@@ -13,7 +13,7 @@ Esse workflow automatiza essa auditoria de ponta a ponta. A nota chega por e-mai
 
 ---
 
-![Fluxo no n8n](./workflow.png.webp)
+![Fluxo no n8n](./Captura%20de%20tela%202026-07-03%20234742.png)
 
 ---
 
