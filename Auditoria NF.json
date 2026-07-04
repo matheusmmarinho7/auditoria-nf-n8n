@@ -1,0 +1,1720 @@
+{
+  "name": "Auditoria NF",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "every5Minutes"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "has:attachment filename:pdf"
+        },
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1968,
+        48
+      ],
+      "id": "85b8af92-77d3-449e-b0c6-67a69132d5e8",
+      "name": "Email NF recebido",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "whDU5TU8JgBZREDq",
+          "name": "Gmail Matheus"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "attachment_0",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1744,
+        48
+      ],
+      "id": "5e96aedf-4a09-466e-a069-b225e6e6cb42",
+      "name": "Extrair texto do PDF",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=Você é um especialista em documentos fiscais brasileiros e extração estruturada de dados.\n\nSua única função é analisar o documento fornecido e retornar EXCLUSIVAMENTE um objeto JSON válido.\n\n# REGRAS OBRIGATÓRIAS\n\n1. Nunca escreva explicações, comentários, introduções ou markdown.\n2. Retorne somente um JSON válido.\n3. Nunca invente ou deduza informações que não estejam claramente presentes no documento.\n4. Quando um campo não puder ser identificado com segurança, utilize null.\n5. Considere como nota fiscal documentos como NF-e (NFe), NFC-e, NFS-e e CT-e.\n6. Se o documento NÃO for uma nota fiscal:\n   - \"is_invoice\" deve ser false.\n   - Preencha apenas: is_invoice, document_type, reason\n   - Todos os demais campos devem obrigatoriamente ser null.\n7. Se o documento FOR uma nota fiscal:\n   - \"is_invoice\" deve ser true.\n   - Extraia somente informações realmente encontradas.\n   - Campos ausentes devem permanecer null.\n8. Datas devem ser retornadas no formato ISO 8601 (YYYY-MM-DD).\n9. \"valor_total\" deve ser retornado como número decimal (exemplo: 1520.75), nunca como texto.\n10. CNPJs devem conter apenas números, removendo pontos, barras e hífens.\n11. Extraia \"pedido_id\" ou \"numero_pedido\" se estiverem visíveis na nota.\n\n# ESTRUTURA OBRIGATÓRIA DA RESPOSTA\n\n{\n  \"is_invoice\": false,\n  \"document_type\": null,\n  \"reason\": null,\n  \"numero_nota\": null,\n  \"serie\": null,\n  \"chave_acesso\": null,\n  \"emitente\": null,\n  \"cnpj_emitente\": null,\n  \"destinatario\": null,\n  \"cnpj_destinatario\": null,\n  \"valor_total\": null,\n  \"data_emissao\": null,\n  \"data_vencimento\": null,\n  \"pedido_id\": null,\n  \"numero_pedido\": null\n}\n\nAgora analise o documento abaixo:\n\n{{ $json.text }}"
+            }
+          ]
+        },
+        "simplify": false,
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        -1568,
+        -64
+      ],
+      "id": "4439bb3d-1a47-4eb1-9914-b7fb936a9a4f",
+      "name": "Extrair dados NF com IA",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "openAiApi": {
+          "id": "2tTB0I6Hsj9fKK50",
+          "name": "OpenAI Matheus"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// CNPJ da empresa que recebe as notas fiscais (usado para validar o destinatário)\nconst CNPJ_NOSSA_EMPRESA = '33042730000104';\n// Prazo máximo, em dias, para aceitar uma nota fiscal\nconst LIMITE_DIAS_NOTA = 90;\n\n// Pega o texto bruto retornado pela IA a partir do PDF processado\nconst textoBrutoIA = $json?.output?.[0]?.content?.[0]?.text;\nif (!textoBrutoIA) {\n  throw new Error('Erro: O texto extraído pela inteligência artificial não foi encontrado.');\n}\n\n// Transforma o texto JSON retornado pela IA em objeto JavaScript\nlet dadosExtraidos;\ntry {\n  dadosExtraidos = JSON.parse(textoBrutoIA);\n} catch (erroParse) {\n  throw new Error(`Erro de leitura: A resposta da IA não está em formato JSON válido: ${erroParse.message}`);\n}\n\n// Remove tudo que não for número (usado em CNPJ e chave de acesso)\nfunction apenasNumeros(valor) {\n  if (valor === null || valor === undefined) return null;\n  const limpo = String(valor).replace(/\\D/g, '');\n  return limpo.length > 0 ? limpo : null;\n}\n\n// Converte valores em texto no formato brasileiro (ex: \"1.250,00\") para número\nfunction tratarValorMonetario(valor) {\n  if (valor === null || valor === undefined || valor === '') return null;\n  if (typeof valor === 'number') return valor;\n  const formatado = String(valor).trim().replace(/\\./g, '').replace(',', '.');\n  const numero = Number(formatado);\n  return Number.isFinite(numero) ? numero : null;\n}\n\n// Organiza os dados extraídos já limpos e normalizados\nconst dadosNota = {\n  is_invoice: Boolean(dadosExtraidos.is_invoice),\n  document_type: dadosExtraidos.document_type ?? null,\n  reason: dadosExtraidos.reason ?? null,\n  numero_nota: dadosExtraidos.numero_nota ?? null,\n  serie: dadosExtraidos.serie ?? null,\n  chave_acesso: apenasNumeros(dadosExtraidos.chave_acesso),\n  emitente: dadosExtraidos.emitente ?? null,\n  cnpj_emitente: apenasNumeros(dadosExtraidos.cnpj_emitente),\n  destinatario: dadosExtraidos.destinatario ?? null,\n  cnpj_destinatario: apenasNumeros(dadosExtraidos.cnpj_destinatario),\n  valor_total: tratarValorMonetario(dadosExtraidos.valor_total),\n  data_emissao: dadosExtraidos.data_emissao ?? null,\n  data_vencimento: dadosExtraidos.data_vencimento ?? null,\n  pedido_id: dadosExtraidos.pedido_id ?? null,\n  numero_pedido: dadosExtraidos.numero_pedido ?? null,\n  auditoria_status: 'ok',\n  auditoria_falha_motivo: null,\n};\n\nif (dadosNota.is_invoice) {\n  // Verifica se o CNPJ do destinatário foi identificado\n  if (!dadosNota.cnpj_destinatario) {\n    dadosNota.auditoria_status = 'bloqueado';\n    dadosNota.auditoria_falha_motivo = 'CNPJ do destinatário não identificado na nota fiscal.';\n  // Verifica se o CNPJ do destinatário é o correto\n  } else if (dadosNota.cnpj_destinatario !== CNPJ_NOSSA_EMPRESA) {\n    dadosNota.auditoria_status = 'bloqueado';\n    dadosNota.auditoria_falha_motivo = `CNPJ Destinatário incorreto. Nota emitida para outro CNPJ (${dadosNota.cnpj_destinatario}).`;\n  }\n\n  // Verifica se a nota não está fora do prazo aceito\n  if (dadosNota.auditoria_status === 'ok' && dadosNota.data_emissao) {\n    const emissao = new Date(dadosNota.data_emissao);\n    const hoje = new Date();\n    const diasDecorridos = Math.ceil(Math.abs(hoje - emissao) / (1000 * 60 * 60 * 24));\n    if (diasDecorridos > LIMITE_DIAS_NOTA) {\n      dadosNota.auditoria_status = 'bloqueado';\n      dadosNota.auditoria_falha_motivo = `Nota emitida há mais de ${LIMITE_DIAS_NOTA} dias (${diasDecorridos} dias atrás).`;\n    }\n  }\n} else {\n  // Se não for nota fiscal, zera os campos que só fazem sentido pra nota fiscal\n  dadosNota.numero_nota = null;\n  dadosNota.serie = null;\n  dadosNota.chave_acesso = null;\n  dadosNota.emitente = null;\n  dadosNota.cnpj_emitente = null;\n  dadosNota.destinatario = null;\n  dadosNota.cnpj_destinatario = null;\n  dadosNota.valor_total = null;\n  dadosNota.data_emissao = null;\n  dadosNota.data_vencimento = null;\n  dadosNota.pedido_id = null;\n  dadosNota.numero_pedido = null;\n}\n\nreturn [{ json: dadosNota }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1248,
+        -64
+      ],
+      "id": "e6799ec5-fb0a-4f20-b651-940fcd6591c0",
+      "name": "Validar e normalizar NF"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "fbb46213-bb97-4eb8-b590-d4bcd9b0f52a",
+              "leftValue": "={{ $json.auditoria_status }}",
+              "rightValue": "bloqueado",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1056,
+        -64
+      ],
+      "id": "1d4e07f6-0f52-4385-ad08-5bb1ab2e3c1b",
+      "name": "Auditoria bloqueada?"
+    },
+    {
+      "parameters": {
+        "tableId": "lancamentos",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data",
+              "fieldValue": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldId": "pedido_id",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "fornecedor_cnpj",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.cnpj_emitente }}"
+            },
+            {
+              "fieldId": "valor_nfe",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.valor_total || 0 }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "bloqueado"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.auditoria_falha_motivo }}"
+            },
+            {
+              "fieldId": "chave_acesso",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.chave_acesso }}"
+            },
+            {
+              "fieldId": "numero_nota",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.numero_nota }}"
+            },
+            {
+              "fieldId": "emitente",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.emitente }}"
+            },
+            {
+              "fieldId": "data_emissao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.data_emissao }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -864,
+        -400
+      ],
+      "id": "395fd060-b804-4be0-8b0f-4c9f04c1d655",
+      "name": "Gravar lançamento (bloqueado)",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🚫 *NOTA FISCAL BLOQUEADA*\n\n*Motivo:* {{ $('Validar e normalizar NF').first().json.auditoria_falha_motivo }}\n\n🧾 *Dados:*\n- Emitente: {{ $('Validar e normalizar NF').first().json.emitente }}\n- CNPJ: {{ $('Validar e normalizar NF').first().json.cnpj_emitente }}\n- Número: {{ $('Validar e normalizar NF').first().json.numero_nota }}\n- Valor: R$ {{ $('Validar e normalizar NF').first().json.valor_total }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -656,
+        -496
+      ],
+      "id": "468c87b9-9c9e-4e25-9bbe-fb50d256308f",
+      "name": "Notificar NF bloqueada",
+      "webhookId": "89893e24-27be-4934-8d91-eeb8c027613d",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5ce05825-f748-4f09-ae23-1ab837a86254",
+              "leftValue": "={{ $json.is_invoice }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -800,
+        -64
+      ],
+      "id": "9f81af7d-ff58-46f0-97cb-aa3bb8f402f7",
+      "name": "É nota fiscal?"
+    },
+    {
+      "parameters": {
+        "tableId": "lancamentos",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data",
+              "fieldValue": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldId": "pedido_id",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "fornecedor_cnpj",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "valor_nfe",
+              "fieldValue": "0"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "documento_invalido"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "={{ $json.document_type }} - {{ $json.reason }}"
+            },
+            {
+              "fieldId": "chave_acesso",
+              "fieldValue": "={{ null }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -656,
+        320
+      ],
+      "id": "eb737516-f75e-4995-96f0-c96004126f68",
+      "name": "Gravar lançamento (doc inválido)",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=⚠️ *Documento inválido recebido no Auditor de NFe*\n\n*Tipo:* {{ $json.status }}\n*Motivo:* {{ $json.observacao }}\n*Data:* {{ $now.toISODate() }}\n*Hora:* {{ $now.toFormat('HH:mm') }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -464,
+        224
+      ],
+      "id": "365da8b9-a63f-43bc-b012-07894bb401a1",
+      "name": "Notificar documento inválido",
+      "webhookId": "e8b85e65-266e-4aa7-bd0f-ecbb6043712e",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ddf1ab4a-07c2-4fa2-bb36-0506bdee8322",
+              "leftValue": "={{ $json.chave_acesso !== null && $json.chave_acesso?.length === 44 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -480,
+        -112
+      ],
+      "id": "954af5a6-944f-485c-af16-5b1cba9155b0",
+      "name": "Chave de acesso válida?"
+    },
+    {
+      "parameters": {
+        "tableId": "lancamentos",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data",
+              "fieldValue": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldId": "pedido_id",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "fornecedor_cnpj",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.cnpj_emitente }}"
+            },
+            {
+              "fieldId": "valor_nfe",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.valor_total || 0 }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "chave_invalida"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "=Chave inválida: {{ $('Validar e normalizar NF').first().json.chave_acesso }} ({{ $('Validar e normalizar NF').first().json.chave_acesso?.length || 0 }} chars)"
+            },
+            {
+              "fieldId": "chave_acesso",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.chave_acesso }}"
+            },
+            {
+              "fieldId": "numero_nota",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.numero_nota }}"
+            },
+            {
+              "fieldId": "emitente",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.emitente }}"
+            },
+            {
+              "fieldId": "data_emissao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.data_emissao }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -240,
+        80
+      ],
+      "id": "c61e90ad-cf3c-4316-9a20-0068d51be799",
+      "name": "Gravar lançamento (chave inválida)",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=⚠️ *CHAVE DE ACESSO INVÁLIDA*\n\n- Emitente: {{ $('Validar e normalizar NF').first().json.emitente }}\n- Número NF: {{ $('Validar e normalizar NF').first().json.numero_nota }}\n- Chave: {{ $('Validar e normalizar NF').first().json.chave_acesso }}\n- Caracteres: - Caracteres: {{ $('Validar e normalizar NF').first().json.chave_acesso ? $('Validar e normalizar NF').first().json.chave_acesso.length : 0 }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -32,
+        -16
+      ],
+      "id": "7b91b571-4d86-475a-a80c-7394874c8a94",
+      "name": "Notificar chave inválida",
+      "webhookId": "d985acf7-26b0-48d3-b2c6-c3dd2d4e7946",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "lancamentos",
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "chave_acesso",
+              "condition": "eq",
+              "keyValue": "={{ $json.chave_acesso }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -224,
+        -224
+      ],
+      "id": "0844ad45-1224-4a59-ab86-a53a3d6cc632",
+      "name": "Verificar duplicata",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "98121934-c468-4c55-b920-f7bf17d99e43",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        0,
+        -224
+      ],
+      "id": "dd171286-6326-4e82-b67b-a3d55cf82bc0",
+      "name": "NF duplicada?"
+    },
+    {
+      "parameters": {
+        "tableId": "lancamentos",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data",
+              "fieldValue": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldId": "pedido_id",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "fornecedor_cnpj",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.cnpj_emitente }}"
+            },
+            {
+              "fieldId": "valor_nfe",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.valor_total || 0 }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "duplicada"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "=NF duplicada - chave {{ $('Validar e normalizar NF').first().json.chave_acesso }}"
+            },
+            {
+              "fieldId": "chave_acesso",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "numero_nota",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.numero_nota }}"
+            },
+            {
+              "fieldId": "emitente",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.emitente }}"
+            },
+            {
+              "fieldId": "data_emissao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.data_emissao }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        176,
+        -336
+      ],
+      "id": "629cc4aa-efad-4cb9-aa99-98a4ac51fbc4",
+      "name": "Gravar lançamento (duplicada)",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🔁 *NOTA FISCAL DUPLICADA*\n\n- Emitente: {{ $('Validar e normalizar NF').first().json.emitente }}\n- CNPJ: {{ $('Validar e normalizar NF').first().json.cnpj_emitente }}\n- Número: {{ $('Validar e normalizar NF').first().json.numero_nota }}\n- Chave: {{ $('Validar e normalizar NF').first().json.chave_acesso }}\n- Valor: R$ {{ $('Validar e normalizar NF').first().json.valor_total }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        384,
+        -464
+      ],
+      "id": "6956f58f-714f-4fee-960b-3b736dcf275a",
+      "name": "Notificar NF duplicada",
+      "webhookId": "11ddd809-6832-478d-9d43-d74ec87e68af",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "pedidos",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "fornecedor_cnpj",
+              "condition": "eq",
+              "keyValue": "={{ $('Validar e normalizar NF').first().json.cnpj_emitente }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        240,
+        -32
+      ],
+      "id": "34849847-9eef-4ea0-aa5b-3b4d364b5e8c",
+      "name": "Buscar pedidos do fornecedor",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tolerância de diferença de valor aceita entre a nota e o pedido\nconst TOLERANCIA_REAIS = 0.10;\n// Busca os pedidos cadastrados para o fornecedor da nota\nconst pedidosEncontrados = $('Buscar pedidos do fornecedor').all();\nconst notaFiscal = $('Validar e normalizar NF').first().json;\n\n// Se não veio nenhum pedido do banco, já bloqueia por falta de referência\nif (!pedidosEncontrados || pedidosEncontrados.length === 0) {\n  return [{\n    json: {\n      ...notaFiscal,\n      match_status: 'pedido_nao_encontrado',\n      match_motivo: 'Nenhum pedido de compra foi retornado pelo banco de dados.',\n    },\n  }];\n}\n\n// Pega a referência de pedido informada na nota (se houver)\nconst pedidoRef = String(notaFiscal.pedido_id || notaFiscal.numero_pedido || '');\nlet pedidoCorrespondente = null;\n\n// Tenta achar o pedido que bate com a referência da nota\nif (pedidoRef) {\n  pedidoCorrespondente = pedidosEncontrados.find((item) => {\n    const p = item.json;\n    return String(p.pedido_id) === pedidoRef || String(p.numero_pedido || '') === pedidoRef;\n  })?.json;\n}\n\n// Só usa o fallback \"fornecedor com 1 pedido só\" se esse item for de fato um\n// pedido de verdade (tem pedido_id) — não o item vazio que o Supabase devolve\n// quando Always Output Data está ligado e a busca não encontra nada.\nif (!pedidoCorrespondente && pedidosEncontrados.length === 1 && pedidosEncontrados[0].json.pedido_id) {\n  pedidoCorrespondente = pedidosEncontrados[0].json;\n}\n\n// Se ainda assim não achou nenhum pedido correspondente, bloqueia\nif (!pedidoCorrespondente) {\n  return [{\n    json: {\n      ...notaFiscal,\n      match_status: 'pedido_nao_encontrado',\n      match_motivo: pedidoRef\n        ? 'O pedido de compra informado na nota não existe no nosso sistema.'\n        : 'Múltiplos pedidos encontrados para o CNPJ e nenhuma referência de pedido na nota.',\n    },\n  }];\n}\n\n// Compara o valor da nota com o valor esperado do pedido\nconst valorNota = Number(notaFiscal.valor_total || 0);\nconst valorPedido = Number(pedidoCorrespondente.valor_esperado || pedidoCorrespondente.valor_total || 0);\nconst diferencaValores = Math.abs(valorNota - valorPedido);\n\nlet matchStatus = 'aprovado';\nlet matchMotivo = null;\n\n// Divergência acima da tolerância bloqueia; dentro da tolerância, aprova com ressalva\nif (diferencaValores > TOLERANCIA_REAIS) {\n  matchStatus = 'divergente';\n  matchMotivo = `Divergência de valores. Nota: R$ ${valorNota.toFixed(2)} | Pedido: R$ ${valorPedido.toFixed(2)} (diferença R$ ${diferencaValores.toFixed(2)})`;\n} else if (diferencaValores > 0) {\n  matchMotivo = `Aprovado com tolerância de arredondamento. Diferença aceita de R$ ${diferencaValores.toFixed(2)}.`;\n}\n\n// Retorna a nota já com o resultado do match aplicado\nreturn [{\n  json: {\n    ...notaFiscal,\n    valor_pedido: valorPedido,\n    pedido_id: pedidoCorrespondente.pedido_id,\n    fornecedor_cnpj: pedidoCorrespondente.fornecedor_cnpj || notaFiscal.cnpj_emitente,\n    match_status: matchStatus,\n    match_motivo: matchMotivo,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        -32
+      ],
+      "id": "b367ba23-c5ef-4425-ac0a-d02045cce906",
+      "name": "Match pedido e validar valor"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e31a6b1c-5627-4956-93e4-af299d2bbe52",
+                    "leftValue": "={{ $json.match_status }}",
+                    "rightValue": "aprovado",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "aprovado"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "319de50b-16cd-468b-8028-7e4b57c57dc0",
+                    "leftValue": "={{ $json.match_status }}",
+                    "rightValue": "divergente",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "divergente"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        720,
+        -32
+      ],
+      "id": "a3a2b00a-42b0-4455-9af9-b10efb0759a8",
+      "name": "Rotear por match_status"
+    },
+    {
+      "parameters": {
+        "tableId": "lancamentos",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data",
+              "fieldValue": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldId": "pedido_id",
+              "fieldValue": "={{ $json.pedido_id }}"
+            },
+            {
+              "fieldId": "fornecedor_cnpj",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.cnpj_emitente }}"
+            },
+            {
+              "fieldId": "valor_nfe",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.valor_total }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "aprovado"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.emitente }} - NF {{ $('Validar e normalizar NF').first().json.numero_nota }}{{ $json.match_motivo ? ' | ' + $json.match_motivo : '' }}"
+            },
+            {
+              "fieldId": "chave_acesso",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.chave_acesso }}"
+            },
+            {
+              "fieldId": "numero_nota",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.numero_nota }}"
+            },
+            {
+              "fieldId": "emitente",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.emitente }}"
+            },
+            {
+              "fieldId": "data_emissao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.data_emissao }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        944,
+        -112
+      ],
+      "id": "aa5d5eba-e041-4a61-b211-865e59fde76d",
+      "name": "Gravar lançamento (aprovado)",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BE53T5W83",
+          "mode": "list",
+          "cachedResultName": "canal-nfs-aprovadas"
+        },
+        "text": "=✅ *NOTA FISCAL APROVADA*\n\n🧾 *Dados da Nota:*\n- Número: {{ $('Validar e normalizar NF').first().json.numero_nota }}\n- Emitente: {{ $('Validar e normalizar NF').first().json.emitente }}\n- CNPJ: {{ $('Validar e normalizar NF').first().json.cnpj_emitente }}\n- Valor: R$ {{ $('Validar e normalizar NF').first().json.valor_total }}\n- Data Emissão: {{ $('Validar e normalizar NF').first().json.data_emissao }}\n\n📋 *Pedido:* {{ $json.pedido_id }}\n✅ Lançamento realizado automaticamente.",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1200,
+        -336
+      ],
+      "id": "ed7891cc-947f-4a4a-acb6-d71583e8312b",
+      "name": "Notificar NF aprovada",
+      "webhookId": "f71d8db1-802d-48dc-92fa-2637aa6c7343",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🚨 *FALHA AO GRAVAR LANÇAMENTO APROVADO*\n\n- Emitente: {{ $('Validar e normalizar NF').first().json.emitente }}\n- CNPJ: {{ $('Validar e normalizar NF').first().json.cnpj_emitente }}\n- Número: {{ $('Validar e normalizar NF').first().json.numero_nota }}\n- Chave: {{ $('Validar e normalizar NF').first().json.chave_acesso }}\n- Valor: R$ {{ $('Validar e normalizar NF').first().json.valor_total }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1200,
+        -176
+      ],
+      "id": "84afa579-53df-41ff-9c4e-1b198bd1d391",
+      "name": "Notificar falha gravação aprovado",
+      "webhookId": "0325d0f2-7ce7-4103-81b1-de3b46ed2567",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "lancamentos",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data",
+              "fieldValue": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldId": "pedido_id",
+              "fieldValue": "={{ $json.pedido_id }}"
+            },
+            {
+              "fieldId": "fornecedor_cnpj",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.cnpj_emitente }}"
+            },
+            {
+              "fieldId": "valor_nfe",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.valor_total || 0 }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "divergente"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "={{ $json.match_motivo }}"
+            },
+            {
+              "fieldId": "chave_acesso",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.chave_acesso }}"
+            },
+            {
+              "fieldId": "numero_nota",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.numero_nota }}"
+            },
+            {
+              "fieldId": "emitente",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.emitente }}"
+            },
+            {
+              "fieldId": "data_emissao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.data_emissao }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        944,
+        64
+      ],
+      "id": "b71056f4-d532-4c7f-9e64-3fc70e9069b8",
+      "name": "Gravar lançamento (divergente)",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🚨 *ALERTA DE DIVERGÊNCIA*\n\n*Pedido:* {{ $json.pedido_id }}\n*Valor pedido:* R$ {{ $json.valor_pedido }}\n*Valor NF:* R$ {{ $('Validar e normalizar NF').first().json.valor_total }}\n\n🔍 *Motivo:* {{ $json.observacao }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1200,
+        -16
+      ],
+      "id": "f7fb6ad2-4e01-40da-a049-601ecb65a8b0",
+      "name": "Notificar divergência",
+      "webhookId": "4653a733-1de0-427c-8ee8-2e6de60a207b",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "lancamentos",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data",
+              "fieldValue": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldId": "pedido_id",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "fornecedor_cnpj",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.cnpj_emitente }}"
+            },
+            {
+              "fieldId": "valor_nfe",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.valor_total || 0 }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "fornecedor_nao_cadastrado"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.emitente }} - {{ $json.match_motivo }}"
+            },
+            {
+              "fieldId": "chave_acesso",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.chave_acesso }}"
+            },
+            {
+              "fieldId": "numero_nota",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.numero_nota }}"
+            },
+            {
+              "fieldId": "emitente",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.emitente }}"
+            },
+            {
+              "fieldId": "data_emissao",
+              "fieldValue": "={{ $('Validar e normalizar NF').first().json.data_emissao }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        960,
+        256
+      ],
+      "id": "e8104643-4b63-4c76-933a-2d6b34d7ce6a",
+      "name": "Gravar lançamento (fornecedor não cadastrado)",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=⚠️ *FORNECEDOR NÃO CADASTRADO*\n\n- Emitente: {{ $('Validar e normalizar NF').first().json.emitente }}\n- CNPJ: {{ $('Validar e normalizar NF').first().json.cnpj_emitente }}\n- Número: {{ $('Validar e normalizar NF').first().json.numero_nota }}\n- Valor: R$ {{ $('Validar e normalizar NF').first().json.valor_total }}\n\n*Motivo:* {{ $json.observacao }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1200,
+        288
+      ],
+      "id": "75de7f67-c587-4ed0-9c16-05baa621823b",
+      "name": "Notificar fornecedor não cadastrado",
+      "webhookId": "a4395558-0556-456f-95f2-c5df8bb59340",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "lancamentos",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data",
+              "fieldValue": "={{ $now.toISODate() }}"
+            },
+            {
+              "fieldId": "pedido_id",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "fornecedor_cnpj",
+              "fieldValue": "={{ null }}"
+            },
+            {
+              "fieldId": "valor_nfe",
+              "fieldValue": "0"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "erro_extracao_pdf"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "=Falha ao extrair texto do PDF - {{ $binary.attachment_0.fileName }}"
+            },
+            {
+              "fieldId": "chave_acesso",
+              "fieldValue": "={{ null }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -1600,
+        240
+      ],
+      "id": "cbc7b220-8f87-43d4-8317-1bfd7fb4b490",
+      "name": "Gravar lançamento (erro pdf)",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": "JuTRW8e5fKXVlkP4",
+          "name": "Supabase Matheus"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=⚠️ *Erro no Auditor de NFe*\n\n*Tipo:* erro_extracao_pdf\n*Arquivo:* {{ $('Email NF recebido').item.binary.attachment_0.fileName }}\n*Data:* {{ $now.toISODate() }}\n*Hora:* {{ $now.toFormat('HH:mm') }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -1408,
+        144
+      ],
+      "id": "a41435e7-50c6-40b5-bfc6-eab490eb718d",
+      "name": "Notificar erro extração PDF",
+      "webhookId": "01612b9c-f6fc-42be-a35a-26da79f2f9b2",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $('Email NF recebido').first().json.id }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -1968,
+        256
+      ],
+      "id": "c8ca8603-23e6-4a18-a09b-2b4246764db8",
+      "name": "Marcar email processado",
+      "webhookId": "12f0aba0-75fb-4d32-8fae-cc96feeb0328",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "whDU5TU8JgBZREDq",
+          "name": "Gmail Matheus"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🛑 *FALHA AO GRAVAR NO SUPABASE*\n\nO evento foi identificado corretamente, mas o INSERT na tabela `lancamentos` falhou.\n\n*Erro:* {{ $json.error?.message || $json.message || 'ver logs do n8n' }}\n\n⚠️ *Ação:* Verificar execução no n8n e gravar manualmente se necessário.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -640,
+        -320
+      ],
+      "id": "41fde7e1-ffcd-4235-97ff-76eb1f6e7bc3",
+      "name": "Notificar falha bloqueado",
+      "webhookId": "3487ed60-f377-4fec-a69a-66ab1ca5b2ac",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🛑 *FALHA AO GRAVAR NO SUPABASE*\n\nO evento foi identificado corretamente, mas o INSERT na tabela `lancamentos` falhou.\n\n*Erro:* {{ $json.error?.message || $json.message || 'ver logs do n8n' }}\n\n⚠️ *Ação:* Verificar execução no n8n e gravar manualmente se necessário.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -464,
+        400
+      ],
+      "id": "ddd1a3b2-b19d-4a89-a144-9a2278dba5b0",
+      "name": "Notificar falha doc inválido",
+      "webhookId": "df3a6867-5bc7-45d0-b7d4-0794122054d8",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🛑 *FALHA AO GRAVAR NO SUPABASE*\n\nO evento foi identificado corretamente, mas o INSERT na tabela `lancamentos` falhou.\n\n*Erro:* {{ $json.error?.message || $json.message || 'ver logs do n8n' }}\n\n⚠️ *Ação:* Verificar execução no n8n e gravar manualmente se necessário.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -32,
+        160
+      ],
+      "id": "7ce70a83-febd-4b71-9e9f-09500951962e",
+      "name": "Notificar falha chave inválida",
+      "webhookId": "550e2f86-90b9-44c7-aa70-edc6d4a70035",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🛑 *FALHA AO GRAVAR NO SUPABASE*\n\nO evento foi identificado corretamente, mas o INSERT na tabela `lancamentos` falhou.\n\n*Erro:* {{ $json.error?.message || $json.message || 'ver logs do n8n' }}\n\n⚠️ *Ação:* Verificar execução no n8n e gravar manualmente se necessário.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        384,
+        -272
+      ],
+      "id": "32ff139a-9bc0-47bd-924c-9ab69f0c0219",
+      "name": "Notificar falha duplicada",
+      "webhookId": "16d3ddd3-f73f-44e4-92a2-a61246d33cb2",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🛑 *FALHA AO GRAVAR NO SUPABASE*\n\nO evento foi identificado corretamente, mas o INSERT na tabela `lancamentos` falhou.\n\n*Erro:* {{ $json.error?.message || $json.message || 'ver logs do n8n' }}\n\n⚠️ *Ação:* Verificar execução no n8n e gravar manualmente se necessário.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1200,
+        128
+      ],
+      "id": "b7e2abcd-6ea0-4c53-b12a-ae44952600aa",
+      "name": "Notificar falha divergente",
+      "webhookId": "f682aef8-a04d-425f-96b7-ce38de7f3890",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🛑 *FALHA AO GRAVAR NO SUPABASE*\n\nO evento foi identificado corretamente, mas o INSERT na tabela `lancamentos` falhou.\n\n*Erro:* {{ $json.error?.message || $json.message || 'ver logs do n8n' }}\n\n⚠️ *Ação:* Verificar execução no n8n e gravar manualmente se necessário.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        1200,
+        448
+      ],
+      "id": "88a6fe52-0bbf-4370-af15-18c22c73641b",
+      "name": "Notificar falha fornecedor não cadastrado",
+      "webhookId": "9596d155-b863-4acd-a79a-8101aebb6d9d",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🛑 *FALHA AO GRAVAR NO SUPABASE*\n\nO evento foi identificado corretamente, mas o INSERT na tabela `lancamentos` falhou.\n\n*Erro:* {{ $json.error?.message || $json.message || 'ver logs do n8n' }}\n\n⚠️ *Ação:* Verificar execução no n8n e gravar manualmente se necessário.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        -1408,
+        304
+      ],
+      "id": "3cc1e14e-190a-4976-92e6-2ff1ac06e6b0",
+      "name": "Notificar falha erro pdf",
+      "webhookId": "04d5632d-6035-4372-a7ee-a085261f3ce9",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Email NF recebido": {
+      "main": [
+        [
+          {
+            "node": "Extrair texto do PDF",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Marcar email processado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair texto do PDF": {
+      "main": [
+        [
+          {
+            "node": "Extrair dados NF com IA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gravar lançamento (erro pdf)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair dados NF com IA": {
+      "main": [
+        [
+          {
+            "node": "Validar e normalizar NF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar e normalizar NF": {
+      "main": [
+        [
+          {
+            "node": "Auditoria bloqueada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auditoria bloqueada?": {
+      "main": [
+        [
+          {
+            "node": "Gravar lançamento (bloqueado)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "É nota fiscal?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lançamento (bloqueado)": {
+      "main": [
+        [
+          {
+            "node": "Notificar NF bloqueada",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar falha bloqueado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É nota fiscal?": {
+      "main": [
+        [
+          {
+            "node": "Chave de acesso válida?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gravar lançamento (doc inválido)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lançamento (doc inválido)": {
+      "main": [
+        [
+          {
+            "node": "Notificar documento inválido",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar falha doc inválido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chave de acesso válida?": {
+      "main": [
+        [
+          {
+            "node": "Verificar duplicata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gravar lançamento (chave inválida)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lançamento (chave inválida)": {
+      "main": [
+        [
+          {
+            "node": "Notificar chave inválida",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar falha chave inválida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificar duplicata": {
+      "main": [
+        [
+          {
+            "node": "NF duplicada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NF duplicada?": {
+      "main": [
+        [
+          {
+            "node": "Gravar lançamento (duplicada)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Buscar pedidos do fornecedor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lançamento (duplicada)": {
+      "main": [
+        [
+          {
+            "node": "Notificar NF duplicada",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar falha duplicada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar pedidos do fornecedor": {
+      "main": [
+        [
+          {
+            "node": "Match pedido e validar valor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match pedido e validar valor": {
+      "main": [
+        [
+          {
+            "node": "Rotear por match_status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rotear por match_status": {
+      "main": [
+        [
+          {
+            "node": "Gravar lançamento (aprovado)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gravar lançamento (divergente)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gravar lançamento (fornecedor não cadastrado)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lançamento (aprovado)": {
+      "main": [
+        [
+          {
+            "node": "Notificar NF aprovada",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar falha gravação aprovado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lançamento (divergente)": {
+      "main": [
+        [
+          {
+            "node": "Notificar divergência",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar falha divergente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lançamento (fornecedor não cadastrado)": {
+      "main": [
+        [
+          {
+            "node": "Notificar fornecedor não cadastrado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar falha fornecedor não cadastrado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lançamento (erro pdf)": {
+      "main": [
+        [
+          {
+            "node": "Notificar erro extração PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notificar falha erro pdf",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "6dfbf071-50da-4e6e-8e62-dc943cf7cd9a",
+  "meta": {
+    "instanceId": "5e1eb88718053a396aeaa64d45d22bcb02228b6e4b8149cb019ffb522a25239b"
+  },
+  "id": "EgekoTMkokhntTmK",
+  "tags": []
+}

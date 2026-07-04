@@ -1,0 +1,73 @@
+{
+  "name": "Erro - NF",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -176,
+        -16
+      ],
+      "id": "e0f4ed81-d43b-4151-8c9f-353f764cbb12",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BAUPEPA3E",
+          "mode": "list",
+          "cachedResultName": "erros-auditoria"
+        },
+        "text": "=🛑 FALHA CRÍTICA NA AUTOMAÇÃO  Identificamos uma interrupção inesperada em um dos processos operacionais.  • Fluxo: {{ $json.workflow.name }} • Nó Afetado: {{ $json.node.name }} • Ambiente: Produção  Detalhes Técnicos da Falha: {{ $json.execution.error?.message \n\n $json.execution.error \n\n 'Erro interno não especificado pelo sistema.' }}  ⚠️ Ação Requerida: O time de operações/suporte deve analisar o ponto de parada para mitigar impactos e realizar o reprocessamento manual se necessário.  🔗 <{{ $json.execution.url }}\n",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        16,
+        -16
+      ],
+      "id": "5d44ce1b-c24d-4035-98dd-fa9dcebef4de",
+      "name": "Send a message",
+      "webhookId": "5e374e6d-aa8a-4c16-880c-f9aaabe814d8",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "Rko8Un4bGbhUejOV",
+          "name": "Slack account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a165268d-f9d7-4c0a-a686-688217cfc3a1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5e1eb88718053a396aeaa64d45d22bcb02228b6e4b8149cb019ffb522a25239b"
+  },
+  "id": "Nf7SexaoZ2x60u6J",
+  "tags": []
+}
